@@ -1,4 +1,5 @@
 pub mod apic;
+pub mod pit;
 pub mod arith;
 pub mod call_indirect;
 pub mod cpu;

@@ -125,18 +125,22 @@ fn lower_irq() { pic::clear_irq(0); }
 // Exports (called from JavaScript via WASM imports)
 // ---------------------------------------------------------------------------
 
+#[no_mangle]
 pub fn get_pit_addr() -> u32 {
     &raw mut *get_pit() as u32
 }
 
+#[no_mangle]
 pub fn pit_state_size() -> u32 {
     PIT_STRUCT_SIZE as u32
 }
 
+#[no_mangle]
 pub fn pit_oscillator_freq() -> f64 {
     OSCILLATOR_FREQ
 }
 
+#[no_mangle]
 pub fn pit_init() {
     let mut pit = get_pit();
     *pit = Pit::default();
@@ -144,6 +148,7 @@ pub fn pit_init() {
 
 /// Called every tick from the JS main loop.  Returns the number of
 /// milliseconds until the next PIT interrupt (for scheduling).
+#[no_mangle]
 pub fn pit_timer(now: f64, no_irq: bool) -> f64 {
     let mut pit = get_pit();
     let mut time_to_next = 100.0_f64;
@@ -181,19 +186,26 @@ pub fn pit_timer(now: f64, no_irq: bool) -> f64 {
 // IO port handlers (wired in cpu.rs io_port_read8 / io_port_write8)
 // ---------------------------------------------------------------------------
 
+#[no_mangle]
 pub fn port40_read() -> u32 { counter_read(0) }
+#[no_mangle]
 pub fn port40_write(v: u8) { counter_write(0, v); }
 
+#[no_mangle]
 pub fn port41_read() -> u32 { counter_read(1) }
+#[no_mangle]
 pub fn port41_write(v: u8) { counter_write(1, v); }
 
+#[no_mangle]
 pub fn port42_read() -> u32 { counter_read(2) }
+#[no_mangle]
 pub fn port42_write(v: u8) {
     counter_write(2, v);
     // TODO: notify speaker of counter 2 update
 }
 
 /// Control word register (write-only)
+#[no_mangle]
 pub fn port43_write(v: u8) {
     let mut pit = get_pit();
     let mode = (v >> 1) & 7;
@@ -235,6 +247,7 @@ pub fn port43_write(v: u8) {
 }
 
 /// Port 0x61: read speaker gate + counter 2 output
+#[no_mangle]
 pub fn port61_read() -> u32 {
     let now = unsafe { js::microtick() };
     let pit = get_pit();
@@ -244,6 +257,7 @@ pub fn port61_read() -> u32 {
 }
 
 /// Port 0x61: write speaker gate
+#[no_mangle]
 pub fn port61_write(_v: u8) {
     // Speaker enable/disable is handled by the bus; for now this is a no-op.
     // The JS code sends "pcspeaker-enable"/"pcspeaker-disable" bus messages.

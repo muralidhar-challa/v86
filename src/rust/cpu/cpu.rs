@@ -9,7 +9,7 @@ use crate::cpu::misc_instr::{
     push16, push32,
 };
 use crate::cpu::modrm::{resolve_modrm16, resolve_modrm32};
-use crate::cpu::{apic, ioapic, pic};
+use crate::cpu::{apic, ioapic, pic, pit};
 use crate::dbg::dbg_trace;
 use crate::gen;
 use crate::jit;
@@ -4357,6 +4357,10 @@ pub fn io_port_read8(port: i32) -> i32 {
         match port {
             0x20 => pic::port20_read() as i32,
             0x21 => pic::port21_read() as i32,
+            0x40 => pit::port40_read() as i32,
+            0x41 => pit::port41_read() as i32,
+            0x42 => pit::port42_read() as i32,
+            0x61 => pit::port61_read() as i32,
             0xA0 => pic::portA0_read() as i32,
             0xA1 => pic::portA1_read() as i32,
             0x4D0 => pic::port4D0_read() as i32,
@@ -4383,6 +4387,11 @@ pub fn io_port_write8(port: i32, value: i32) {
                 };
                 handle_irqs()
             },
+            0x40 => pit::port40_write(value as u8),
+            0x41 => pit::port41_write(value as u8),
+            0x42 => pit::port42_write(value as u8),
+            0x43 => pit::port43_write(value as u8),
+            0x61 => pit::port61_write(value as u8),
             _ => js::io_port_write8(port, value),
         }
     }

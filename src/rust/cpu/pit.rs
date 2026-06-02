@@ -3,6 +3,7 @@
 // Ported from src/pit.js.  See also:
 //   https://wiki.osdev.org/Programmable_Interval_Timer
 
+use crate::cpu::cpu::js;
 use crate::cpu::pic;
 use std::sync::Mutex;
 
@@ -126,6 +127,171 @@ pub fn get_pit_addr() -> u32 {
 pub fn pit_init() {
     let mut pit = get_pit();
     *pit = Pit::default();
+}
+
+/// Called every tick from the JS main loop.  Returns the number of
+/// milliseconds until the next PIT interrupt (for scheduling).
+pub fn pit_timer(now: f64, no_irq: bool) -> f64 {
+    let mut pit = get_pit();
+    let mut time_to_next = 100.0_f64;
+
+    let ctr0 = &mut pit.counters[0];
+
+    // Counter 0 produces interrupts
+    if !no_irq {
+        if ctr0.enabled && did_rollover(ctr0, now) {
+            ctr0.start_value = get_counter_value(ctr0, now);
+            ctr0.start_time = now;
+
+            lower_irq();
+            raise_irq();
+
+            if ctr0.mode == 0 {
+                ctr0.enabled = false;
+            }
+        } else {
+            lower_irq();
+        }
+
+        if ctr0.enabled {
+            let diff = now - ctr0.start_time;
+            let diff_in_ticks = (diff * OSCILLATOR_FREQ) as u32;
+            let ticks_missing = ctr0.start_value as u32 - diff_in_ticks;
+            time_to_next = ticks_missing as f64 / OSCILLATOR_FREQ;
+        }
+    }
+
+    time_to_next
+}
+
+// ---------------------------------------------------------------------------
+// IO port handlers (wired in cpu.rs io_port_read8 / io_port_write8)
+// ---------------------------------------------------------------------------
+
+pub fn port40_read() -> u32 { counter_read(0) }
+pub fn port40_write(v: u8) { counter_write(0, v); }
+
+pub fn port41_read() -> u32 { counter_read(1) }
+pub fn port41_write(v: u8) { counter_write(1, v); }
+
+pub fn port42_read() -> u32 { counter_read(2) }
+pub fn port42_write(v: u8) {
+    counter_write(2, v);
+    // TODO: notify speaker of counter 2 update
+}
+
+/// Control word register (write-only)
+pub fn port43_write(v: u8) {
+    let mut pit = get_pit();
+    let mode = (v >> 1) & 7;
+    let _binary_mode = v & 1;
+    let i = (v >> 6) as usize & 3;
+    let read_mode = (v >> 4) & 3;
+
+    if i >= NUM_COUNTERS || i == 3 {
+        // read-back command (counter 3) not implemented
+        return;
+    }
+
+    let ctr = &mut pit.counters[i];
+
+    if read_mode == READ_MODE_LATCH {
+        // Latch current value
+        ctr.latch = LATCH_HIGH;
+        let val = get_counter_value(ctr, unsafe { js::microtick() });
+        ctr.latch_value = if val > 0 { val - 1 } else { 0 };
+        return;
+    }
+
+    // Modes 6 and 7 are aliased to 2 and 3
+    let mode = if mode >= 6 { mode & !4 } else { mode };
+
+    ctr.mode = mode;
+    ctr.read_mode = read_mode;
+    ctr.next_low = read_mode != READ_MODE_MSB;
+
+    if i == 0 {
+        lower_irq();
+    }
+
+    match mode {
+        0 => { /* interrupt on terminal count — handled in pit_timer */ }
+        2 | 3 => { /* rate generator / square wave */ }
+        _ => { /* unimplemented */ }
+    }
+}
+
+/// Port 0x61: read speaker gate + counter 2 output
+pub fn port61_read() -> u32 {
+    let now = unsafe { js::microtick() };
+    let pit = get_pit();
+    let ref_toggle = ((now * (1000.0 * 1000.0 / 15000.0)) as u64 & 1) as u32;
+    let counter2_out = if did_rollover(&pit.counters[2], now) { 1 } else { 0 };
+    ref_toggle << 4 | counter2_out << 5
+}
+
+/// Port 0x61: write speaker gate
+pub fn port61_write(_v: u8) {
+    // Speaker enable/disable is handled by the bus; for now this is a no-op.
+    // The JS code sends "pcspeaker-enable"/"pcspeaker-disable" bus messages.
+}
+
+// ---------------------------------------------------------------------------
+// Internal counter read/write
+// ---------------------------------------------------------------------------
+
+fn counter_read(i: usize) -> u32 {
+    let mut pit = get_pit();
+    let ctr = &mut pit.counters[i];
+
+    if ctr.latch != LATCH_NONE {
+        ctr.latch -= 1;
+        return if ctr.latch == LATCH_LOW {
+            (ctr.latch_value & 0xFF) as u32
+        } else {
+            (ctr.latch_value >> 8) as u32
+        };
+    }
+
+    let now = unsafe { js::microtick() };
+
+    // Mode 3 toggles next_low on each read
+    if ctr.mode == 3 {
+        ctr.next_low = !ctr.next_low;
+    }
+
+    let value = get_counter_value(ctr, now);
+
+    if ctr.next_low {
+        (value & 0xFF) as u32
+    } else {
+        (value >> 8) as u32
+    }
+}
+
+fn counter_write(i: usize, value: u8) {
+    let now = unsafe { js::microtick() };
+    let mut pit = get_pit();
+    let ctr = &mut pit.counters[i];
+
+    if ctr.next_low {
+        ctr.reload = (ctr.reload & !0xFF) | value as u16;
+    } else {
+        ctr.reload = (ctr.reload & 0xFF) | ((value as u16) << 8);
+    }
+
+    if ctr.read_mode != READ_MODE_LSB_MSB || !ctr.next_low {
+        if ctr.reload == 0 {
+            ctr.reload = 0xFFFF;
+        }
+        ctr.start_value = ctr.reload;
+        ctr.enabled = true;
+        ctr.start_time = now;
+    }
+
+    if ctr.read_mode == READ_MODE_LSB_MSB {
+        ctr.next_low = !ctr.next_low;
+    }
 }
 
 // ---------------------------------------------------------------------------

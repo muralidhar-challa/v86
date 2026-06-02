@@ -32,7 +32,11 @@ const LATCH_HIGH: u8 = 2;
 // Types
 // ---------------------------------------------------------------------------
 
+// State layout must match JS save/restore.  Keep in sync with cpu.js.
+const PIT_STRUCT_SIZE: usize = std::mem::size_of::<Pit>();
+
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct Counter {
     /// When the counter was last started/reset (in ms from microtick())
     start_time: f64,
@@ -76,6 +80,7 @@ impl Default for Counter {
     }
 }
 
+#[repr(C)]
 pub struct Pit {
     counters: [Counter; NUM_COUNTERS],
 }
@@ -122,6 +127,14 @@ fn lower_irq() { pic::clear_irq(0); }
 
 pub fn get_pit_addr() -> u32 {
     &raw mut *get_pit() as u32
+}
+
+pub fn pit_state_size() -> u32 {
+    PIT_STRUCT_SIZE as u32
+}
+
+pub fn pit_oscillator_freq() -> f64 {
+    OSCILLATOR_FREQ
 }
 
 pub fn pit_init() {

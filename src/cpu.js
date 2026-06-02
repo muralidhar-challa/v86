@@ -16,7 +16,6 @@ import { dbg_assert, dbg_log } from "./log.js";
 
 import { SB16 } from "./sb16.js";
 import { ACPI } from "./acpi.js";
-import { PIT } from "./pit.js";
 import { DMA } from "./dma.js";
 import { UART } from "./uart.js";
 import { Ne2k } from "./ne2k.js";
@@ -424,6 +423,10 @@ CPU.prototype.wasm_patch = function()
     this.get_pic_addr_slave = get_import("get_pic_addr_slave");
     this.get_apic_addr = get_import("get_apic_addr");
     this.get_ioapic_addr = get_import("get_ioapic_addr");
+    this.get_pit_addr = get_import("get_pit_addr");
+    this.pit_state_size = get_import("pit_state_size");
+    this.pit_timer = get_import("pit_timer");
+    this.pit_init = get_import("pit_init");
 
     this.zstd_create_ctx = get_import("zstd_create_ctx");
     this.zstd_get_src_ptr = get_import("zstd_get_src_ptr");
@@ -531,7 +534,8 @@ CPU.prototype.get_state = function()
         state[85] = this.devices.ide;
     }
 
-    state[58] = this.devices.pit;
+    state[58] = this.pit_state_size &&
+        new Uint8Array(this.wasm_memory.buffer, this.get_pit_addr(), this.pit_state_size());
     state[59] = this.devices.net;
     state[60] = this.get_state_pic();
     state[61] = this.devices.sb16;
@@ -727,7 +731,10 @@ CPU.prototype.set_state = function(state)
 
     this.devices.pci && this.devices.pci.set_state(state[48]);
 
-    this.devices.pit && this.devices.pit.set_state(state[58]);
+    if(state[58]) {
+        const pit_buf = new Uint8Array(this.wasm_memory.buffer, this.get_pit_addr(), this.pit_state_size());
+        pit_buf.set(state[58]);
+    }
     this.devices.net && this.devices.net.set_state(state[59]);
     this.set_state_pic(state[60]);
     this.devices.sb16 && this.devices.sb16.set_state(state[61]);
@@ -1204,7 +1211,7 @@ CPU.prototype.init = function(settings, device_bus)
         this.devices.ide = new IDEController(this, device_bus, ide_config);
         this.devices.cdrom = this.devices.ide.secondary.master;
 
-        this.devices.pit = new PIT(this, device_bus);
+        this.pit_init();
 
         if(settings.net_device.type === "ne2k")
         {
@@ -1902,7 +1909,7 @@ CPU.prototype.dump_function_code = function(block_ptr, count)
 
 CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
 {
-    const pit_time = this.devices.pit.timer(now, false);
+    const pit_time = this.pit_timer(now, false);
     const rtc_time = this.devices.rtc.timer(now, false);
 
     let acpi_time = 100;

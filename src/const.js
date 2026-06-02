@@ -139,3 +139,6 @@ export const MIXER_CHANNEL_BOTH = 2;
 export const MIXER_SRC_MASTER = 0;
 export const MIXER_SRC_PCSPEAKER = 1;
 export const MIXER_SRC_DAC = 2;
+
+// PIT oscillator frequency in kHz (1.193182 MHz)
+export const OSCILLATOR_FREQ = 1193.1816666;

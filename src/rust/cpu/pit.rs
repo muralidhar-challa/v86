@@ -5,7 +5,6 @@
 
 use crate::cpu::cpu::js;
 use crate::cpu::pic;
-use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -94,27 +93,27 @@ impl Default for Pit {
 }
 
 // ---------------------------------------------------------------------------
-// Global state
+// Global state — heap-allocated for stable address in WASM linear memory
 // ---------------------------------------------------------------------------
 
-static PIT: std::sync::LazyLock<Mutex<Pit>> = std::sync::LazyLock::new(|| {
-    Mutex::new(Pit {
-        counters: [Counter {
-            start_time: 0.0,
-            start_value: 0,
-            reload: 0,
-            enabled: false,
-            mode: 0,
-            read_mode: 0,
-            next_low: true,
-            latch: 0,
-            latch_value: 0,
-        }; NUM_COUNTERS],
-    })
-});
+static mut PIT_PTR: *mut Pit = std::ptr::null_mut();
 
-fn get_pit() -> std::sync::MutexGuard<'static, Pit> {
-    PIT.try_lock().unwrap()
+fn get_pit_mut() -> &'static mut Pit {
+    unsafe {
+        if PIT_PTR.is_null() {
+            let layout = std::alloc::Layout::new::<Pit>();
+            let ptr = std::alloc::alloc(layout) as *mut Pit;
+            std::ptr::write(ptr, Pit {
+                counters: [Counter {
+                    start_time: 0.0, start_value: 0, reload: 0,
+                    enabled: false, mode: 0, read_mode: 0,
+                    next_low: true, latch: 0, latch_value: 0,
+                }; NUM_COUNTERS],
+            });
+            PIT_PTR = ptr;
+        }
+        &mut *PIT_PTR
+    }
 }
 
 // IRQ 0 is the PIT's interrupt line
@@ -127,7 +126,7 @@ fn lower_irq() { pic::clear_irq(0); }
 
 #[no_mangle]
 pub fn get_pit_addr() -> u32 {
-    &raw mut *get_pit() as u32
+    get_pit_mut() as *const Pit as u32
 }
 
 #[no_mangle]
@@ -142,7 +141,7 @@ pub fn pit_oscillator_freq() -> f64 {
 
 #[no_mangle]
 pub fn pit_init() {
-    let mut pit = get_pit();
+    let pit = get_pit_mut();
     *pit = Pit::default();
 }
 
@@ -150,7 +149,7 @@ pub fn pit_init() {
 /// milliseconds until the next PIT interrupt (for scheduling).
 #[no_mangle]
 pub fn pit_timer(now: f64, no_irq: bool) -> f64 {
-    let mut pit = get_pit();
+    let pit = get_pit_mut();
     let mut time_to_next = 100.0_f64;
 
     let ctr0 = &mut pit.counters[0];
@@ -207,7 +206,7 @@ pub fn port42_write(v: u8) {
 /// Control word register (write-only)
 #[no_mangle]
 pub fn port43_write(v: u8) {
-    let mut pit = get_pit();
+    let pit = get_pit_mut();
     let mode = (v >> 1) & 7;
     let _binary_mode = v & 1;
     let i = (v >> 6) as usize & 3;
@@ -250,7 +249,7 @@ pub fn port43_write(v: u8) {
 #[no_mangle]
 pub fn port61_read() -> u32 {
     let now = unsafe { js::microtick() };
-    let pit = get_pit();
+    let pit = get_pit_mut();
     let ref_toggle = ((now * (1000.0 * 1000.0 / 15000.0)) as u64 & 1) as u32;
     let counter2_out = if did_rollover(&pit.counters[2], now) { 1 } else { 0 };
     ref_toggle << 4 | counter2_out << 5
@@ -268,7 +267,7 @@ pub fn port61_write(_v: u8) {
 // ---------------------------------------------------------------------------
 
 fn counter_read(i: usize) -> u32 {
-    let mut pit = get_pit();
+    let pit = get_pit_mut();
     let ctr = &mut pit.counters[i];
 
     if ctr.latch != LATCH_NONE {
@@ -298,7 +297,7 @@ fn counter_read(i: usize) -> u32 {
 
 fn counter_write(i: usize, value: u8) {
     let now = unsafe { js::microtick() };
-    let mut pit = get_pit();
+    let pit = get_pit_mut();
     let ctr = &mut pit.counters[i];
 
     if ctr.next_low {
@@ -325,7 +324,7 @@ fn counter_write(i: usize, value: u8) {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Get the current counter value for a given counter index at time `now`.
+/// Get the current counter value for a given counter at time `now`.
 fn get_counter_value(counter: &Counter, now: f64) -> u16 {
     if !counter.enabled {
         return 0;
@@ -348,8 +347,7 @@ fn get_counter_value(counter: &Counter, now: f64) -> u16 {
     value as u16
 }
 
-/// Check whether counter `i` has rolled over (i.e., counted down past zero)
-/// at time `now`.
+/// Check whether counter has rolled over (i.e., counted down past zero).
 fn did_rollover(counter: &Counter, now: f64) -> bool {
     let diff = now - counter.start_time;
     if diff < 0.0 {
